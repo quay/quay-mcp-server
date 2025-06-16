@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -23,135 +23,82 @@ func NewQuayMCPServer(registryURL, oauthToken string) *QuayMCPServer {
 		mcpServer: server.NewMCPServer(
 			"quay-mcp",
 			"1.0.0",
-			server.WithResourceCapabilities(true, true), // Enable both resources and resource templates
+			server.WithToolCapabilities(false), // Enable tools
 		),
 	}
 }
 
-// generateResourcesAndTemplates creates MCP resources and templates from Quay API endpoints
-func (s *QuayMCPServer) generateResourcesAndTemplates() ([]mcp.Resource, []mcp.ResourceTemplate) {
-	spec := s.quayClient.GetSpec()
-	if spec == nil {
-		return nil, nil
-	}
+// createToolHandler creates a handler function for MCP tool calls
+func (s *QuayMCPServer) createToolHandler() func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Extract tool name and find corresponding endpoint
+		toolName := request.Params.Name
 
-	var resources []mcp.Resource
-	var templates []mcp.ResourceTemplate
-
-	for path, pathDetails := range spec.Paths {
-		// Only process GET operations
-		if pathDetails.Get == nil {
-			continue
+		// Remove "quay_" prefix to get the original identifier
+		if !strings.HasPrefix(toolName, "quay_") {
+			return mcp.NewToolResultError("Invalid tool name: must start with 'quay_'"), nil
 		}
 
-		operation := pathDetails.Get
+		identifier := strings.TrimPrefix(toolName, "quay_")
 
-		// Create name and description
-		name := operation.Summary
-		if name == "" {
-			name = operation.Description
-		}
-		if name == "" {
-			name = fmt.Sprintf("GET %s", path)
-		}
+		// Find the endpoint by operation ID or path
+		var endpoint *EndpointInfo
 
-		description := fmt.Sprintf("GET %s", path)
-		if operation.Description != "" {
-			description += fmt.Sprintf(" - %s", operation.Description)
-		}
-		if len(operation.Tags) > 0 {
-			description += fmt.Sprintf(" (Tags: %s)", strings.Join(operation.Tags, ", "))
-		}
-		if operation.OperationID != "" {
-			description += fmt.Sprintf(" [%s]", operation.OperationID)
-		}
-
-		uri := fmt.Sprintf("quay://%s", strings.TrimPrefix(path, "/"))
-
-		// Check if the path has parameters
-		if HasPathParameters(path) {
-			// Create a resource template for parameterized endpoints
-			template := mcp.NewResourceTemplate(
-				uri,
-				name,
-				mcp.WithTemplateDescription(description),
-				mcp.WithTemplateMIMEType("application/json"),
-			)
-			templates = append(templates, template)
-		} else {
-			// Create a regular resource for non-parameterized endpoints
-			resource := mcp.NewResource(
-				uri,
-				name,
-				mcp.WithResourceDescription(description),
-				mcp.WithMIMEType("application/json"),
-			)
-			resources = append(resources, resource)
-		}
-	}
-
-	return resources, templates
-}
-
-// createResourceHandler creates a handler function for MCP resource requests
-func (s *QuayMCPServer) createResourceHandler() func(context.Context, mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	return func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		// Get endpoint info for this resource
 		endpoints := s.quayClient.GetEndpoints()
-		endpoint, exists := endpoints[request.Params.URI]
-		if !exists {
-			return nil, fmt.Errorf("endpoint not found for URI: %s", request.Params.URI)
+		arguments := request.GetArguments()
+
+		// First try to find by operation ID
+		for _, ep := range endpoints {
+			if ep.OperationID == identifier {
+				endpoint = ep
+				break
+			}
 		}
 
-		// Make the actual API call to Quay (all endpoints are GET requests)
-		responseData, err := s.quayClient.MakeAPICall(endpoint, request.Params.URI)
+		// If not found by operation ID, try to find by path-based identifier
+		if endpoint == nil {
+			for _, ep := range endpoints {
+				pathIdentifier := strings.ReplaceAll(strings.Trim(ep.Path, "/"), "/", "_")
+				pathIdentifier = strings.ReplaceAll(pathIdentifier, "{", "")
+				pathIdentifier = strings.ReplaceAll(pathIdentifier, "}", "")
+				if pathIdentifier == "" {
+					pathIdentifier = "root"
+				}
+
+				if pathIdentifier == identifier {
+					endpoint = ep
+					break
+				}
+			}
+		}
+
+		if endpoint == nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Endpoint not found for tool: %s", toolName)), nil
+		}
+
+		// Use the new method that handles both path and query parameters for all endpoints
+		log.Printf("Making API call to endpoint: %s %s", endpoint.Method, endpoint.Path)
+		log.Printf("With arguments: %+v", arguments)
+
+		// Handle custom resource_uri if provided - but only for path parameter construction
+		if customURI, exists := arguments["resource_uri"]; exists {
+			if customURIStr, ok := customURI.(string); ok && customURIStr != "" {
+				// For custom resource URIs, we might need to use the old method
+				// if it's a complete custom URI that doesn't follow our parameter pattern
+				if HasPathParameters(endpoint.Path) {
+					// Still use the new method but log the custom URI usage
+					log.Printf("Custom resource_uri provided but endpoint has path parameters, using new method")
+				}
+			}
+		}
+
+		responseData, err := s.quayClient.MakeAPICallWithParams(endpoint, arguments)
 		if err != nil {
-			// Return error information as JSON
-			errorInfo := map[string]interface{}{
-				"uri":    request.Params.URI,
-				"error":  err.Error(),
-				"method": endpoint.Method,
-				"path":   endpoint.Path,
-			}
-
-			jsonData, marshalErr := json.MarshalIndent(errorInfo, "", "  ")
-			if marshalErr != nil {
-				return nil, fmt.Errorf("API call failed: %v (and failed to marshal error: %v)", err, marshalErr)
-			}
-
-			return []mcp.ResourceContents{
-				mcp.TextResourceContents{
-					URI:      request.Params.URI,
-					MIMEType: "application/json",
-					Text:     string(jsonData),
-				},
-			}, nil
+			return mcp.NewToolResultText(fmt.Sprintf("API call failed: %s", err.Error())), nil
 		}
 
-		// Validate that response is valid JSON
-		var jsonCheck interface{}
-		if err := json.Unmarshal(responseData, &jsonCheck); err != nil {
-			// If not valid JSON, wrap it
-			wrappedResponse := map[string]interface{}{
-				"uri":      request.Params.URI,
-				"response": string(responseData),
-				"note":     "Response was not valid JSON, wrapped as string",
-			}
-
-			jsonData, marshalErr := json.MarshalIndent(wrappedResponse, "", "  ")
-			if marshalErr != nil {
-				return nil, fmt.Errorf("failed to process response: %v", marshalErr)
-			}
-			responseData = jsonData
-		}
-
-		return []mcp.ResourceContents{
-			mcp.TextResourceContents{
-				URI:      request.Params.URI,
-				MIMEType: "application/json",
-				Text:     string(responseData),
-			},
-		}, nil
+		// Return the JSON response as text
+		return mcp.NewToolResultText(string(responseData)), nil
 	}
 }
 
@@ -165,24 +112,17 @@ func (s *QuayMCPServer) Start() error {
 	// Discover endpoints
 	s.quayClient.DiscoverEndpoints()
 
-	// Generate and add resources and templates
-	resources, templates := s.generateResourcesAndTemplates()
+	// Generate and add tools
+	tools := s.quayClient.generateTools()
 
-	// Create a shared resource handler
-	resourceHandler := s.createResourceHandler()
+	// Create a shared tool handler
+	toolHandler := s.createToolHandler()
 
-	// Add regular resources (for endpoints without parameters)
-	for _, resource := range resources {
-		// Capture the resource in the closure
-		currentResource := resource
-		s.mcpServer.AddResource(currentResource, resourceHandler)
-	}
-
-	// Add resource templates (for endpoints with parameters)
-	for _, template := range templates {
-		// Capture the template in the closure
-		currentTemplate := template
-		s.mcpServer.AddResourceTemplate(currentTemplate, resourceHandler)
+	// Add all tools
+	for _, tool := range tools {
+		// Capture the tool in the closure
+		currentTool := tool
+		s.mcpServer.AddTool(currentTool, toolHandler)
 	}
 
 	// Start the server using stdio

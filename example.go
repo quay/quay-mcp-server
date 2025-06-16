@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 )
@@ -19,62 +18,31 @@ func ExampleUsage() {
 	// Discover endpoints
 	server.quayClient.DiscoverEndpoints()
 
-	// Generate resources and templates
-	resources, templates := server.generateResourcesAndTemplates()
+	// Generate and display tools
+	tools := server.quayClient.generateTools()
 
-	fmt.Printf("Generated %d resources and %d resource templates from Quay API\n\n", len(resources), len(templates))
+	fmt.Printf("\nFound %d tools from the API:\n", len(tools))
 
-	// Show first few resources (non-parameterized endpoints)
-	fmt.Println("Sample Resources (non-parameterized endpoints):")
-	for i, resource := range resources {
-		if i >= 3 { // Show only first 3
+	for i, tool := range tools {
+		if i >= 3 { // Show only first 3 for brevity
+			fmt.Printf("... and %d more tools\n", len(tools)-i)
 			break
 		}
-		fmt.Printf("- %s: %s\n", resource.URI, resource.Name)
-	}
 
-	// Show first few resource templates (parameterized endpoints)
-	fmt.Println("\nSample Resource Templates (parameterized endpoints):")
-	for i, template := range templates {
-		if i >= 3 { // Show only first 3
-			break
+		fmt.Printf("- Tool: %s\n", tool.Name)
+		if tool.Description != "" {
+			fmt.Printf("  Description: %s\n", tool.Description)
 		}
-		fmt.Printf("- %s: %s\n", template.URITemplate.Raw(), template.Name)
-	}
 
-	// Show some endpoint details
-	fmt.Println("\nEndpoint details:")
-	count := 0
-	endpoints := server.quayClient.GetEndpoints()
-	for uri, endpoint := range endpoints {
-		if count >= 5 { // Show only first 5
-			break
-		}
-		fmt.Printf("- %s -> %s %s (%s)\n", uri, endpoint.Method, endpoint.Path, endpoint.Summary)
-		count++
-	}
-
-	// Show the swagger spec structure
-	spec := server.quayClient.GetSpec()
-	fmt.Printf("\nSwagger spec loaded from: %s/api/v1/discovery\n", server.quayClient.GetRegistryURL())
-	fmt.Printf("Host: %s\n", spec.Host)
-	fmt.Printf("Base Path: %s\n", spec.BasePath)
-	fmt.Printf("Schemes: %v\n", spec.Schemes)
-
-	// Pretty print a sample endpoint
-	if len(spec.Paths) > 0 {
-		fmt.Println("\nSample endpoint structure:")
-		for path, details := range spec.Paths {
-			if details.Get != nil {
-				jsonData, _ := json.MarshalIndent(map[string]interface{}{
-					"path":      path,
-					"operation": details.Get,
-				}, "", "  ")
-				fmt.Println(string(jsonData))
-				break // Show only one example
-			}
+		// Show required parameters
+		if len(tool.InputSchema.Required) > 0 {
+			fmt.Printf("  Required parameters: %v\n", tool.InputSchema.Required)
 		}
 	}
+
+	fmt.Println("\nTo use this as an MCP server, run:")
+	fmt.Println("  ./quay-mcp")
+	fmt.Println("\nThen configure your Claude Desktop client to use this server.")
 }
 
 // This example would output something like:
@@ -137,4 +105,118 @@ func ExampleAPICall() {
 	fmt.Println("3. API error (returns error info):")
 	fmt.Println("   Request: quay://repository/nonexistent/repo")
 	fmt.Println("   Response: Error details in JSON format")
+}
+
+// RunExample demonstrates the Quay MCP server functionality
+func RunExample(registryURL, oauthToken string) {
+	fmt.Printf("Connecting to Quay registry at: %s\n", registryURL)
+
+	// Create Quay client
+	client := NewQuayClient(registryURL, oauthToken)
+
+	// Fetch and parse swagger spec
+	if err := client.FetchSwaggerSpec(); err != nil {
+		log.Fatalf("Failed to fetch swagger spec: %v", err)
+	}
+
+	// Discover endpoints
+	client.DiscoverEndpoints()
+
+	// Generate tools
+	tools := client.generateTools()
+
+	fmt.Printf("\nFound %d tools from the API:\n", len(tools))
+
+	// Show first 3 tools in detail
+	for i, tool := range tools {
+		if i >= 3 {
+			break
+		}
+
+		fmt.Printf("- Tool: %s\n", tool.Name)
+		fmt.Printf("  Description: %s\n", tool.Description)
+
+		// Show any required parameters
+		if tool.InputSchema.Required != nil && len(tool.InputSchema.Required) > 0 {
+			// Filter out the "resource_uri" parameter since it's optional
+			var requiredParams []string
+			for _, param := range tool.InputSchema.Required {
+				if param != "resource_uri" {
+					requiredParams = append(requiredParams, param)
+				}
+			}
+			if len(requiredParams) > 0 {
+				fmt.Printf("  Required parameters: %v\n", requiredParams)
+			}
+		}
+	}
+
+	if len(tools) > 3 {
+		fmt.Printf("... and %d more tools\n", len(tools)-3)
+	}
+
+	// Try to make a sample API call to demonstrate logging
+	fmt.Printf("\n=== MAKING SAMPLE API CALL ===\n")
+	endpoints := client.GetEndpoints()
+
+	// Find a simple endpoint like /api/v1/plans/
+	var sampleEndpoint *EndpointInfo
+	var sampleURI string
+
+	for uri, endpoint := range endpoints {
+		if endpoint.Path == "/api/v1/plans/" && endpoint.Method == "GET" {
+			sampleEndpoint = endpoint
+			sampleURI = uri
+			break
+		}
+	}
+
+	if sampleEndpoint != nil {
+		fmt.Printf("Making sample API call to demonstrate logging...\n")
+		data, err := client.MakeAPICall(sampleEndpoint, sampleURI)
+		if err != nil {
+			fmt.Printf("Sample API call failed: %v\n", err)
+		} else {
+			fmt.Printf("Sample API call succeeded, received %d bytes of data\n", len(data))
+		}
+	} else {
+		fmt.Printf("Could not find sample endpoint for demonstration\n")
+	}
+
+	// Display information about the swagger spec
+	model := client.GetModel()
+	if model != nil {
+		fmt.Printf("\nSwagger spec loaded from: %s\n", registryURL+"/api/v1/discovery")
+		fmt.Printf("Host: %s\n", model.Model.Host)
+		fmt.Printf("Base Path: %s\n", model.Model.BasePath)
+		fmt.Printf("Schemes: %v\n", model.Model.Schemes)
+		if model.Model.Info != nil {
+			fmt.Printf("Title: %s\n", model.Model.Info.Title)
+			fmt.Printf("Version: %s\n", model.Model.Info.Version)
+		}
+
+		// Show structure of a sample endpoint
+		for pathPair := model.Model.Paths.PathItems.First(); pathPair != nil; pathPair = pathPair.Next() {
+			path := pathPair.Key()
+			pathItem := pathPair.Value()
+
+			if pathItem.Get != nil {
+				fmt.Printf("\nSample endpoint structure:\n")
+				fmt.Printf("{\n")
+				fmt.Printf("  \"operation\": {\n")
+				fmt.Printf("    \"description\": \"%s\",\n", pathItem.Get.Description)
+				fmt.Printf("    \"operationId\": \"%s\",\n", pathItem.Get.OperationId)
+				fmt.Printf("    \"summary\": \"%s\",\n", pathItem.Get.Summary)
+				fmt.Printf("    \"tags\": %v\n", pathItem.Get.Tags)
+				fmt.Printf("  },\n")
+				fmt.Printf("  \"path\": \"%s\"\n", path)
+				fmt.Printf("}\n")
+				break
+			}
+		}
+	}
+
+	fmt.Printf("\nTo use this as an MCP server, run:\n")
+	fmt.Printf("  ./quay-mcp -url %s\n", registryURL)
+	fmt.Printf("\nThen configure your Claude Desktop client to use this server.\n")
 }
