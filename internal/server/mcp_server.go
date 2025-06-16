@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -8,24 +8,32 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/quay/quay-mcp-server/internal/client"
+	"github.com/quay/quay-mcp-server/internal/types"
 )
 
 // QuayMCPServer wraps the MCP server with Quay-specific functionality
 type QuayMCPServer struct {
-	quayClient *QuayClient
+	quayClient *client.QuayClient
 	mcpServer  *server.MCPServer
 }
 
 // NewQuayMCPServer creates a new Quay MCP server
 func NewQuayMCPServer(registryURL, oauthToken string) *QuayMCPServer {
 	return &QuayMCPServer{
-		quayClient: NewQuayClient(registryURL, oauthToken),
+		quayClient: client.NewQuayClient(registryURL, oauthToken),
 		mcpServer: server.NewMCPServer(
 			"quay-mcp",
 			"1.0.0",
 			server.WithToolCapabilities(false), // Enable tools
 		),
 	}
+}
+
+// GetQuayClient returns the underlying Quay client
+func (s *QuayMCPServer) GetQuayClient() *client.QuayClient {
+	return s.quayClient
 }
 
 // createToolHandler creates a handler function for MCP tool calls
@@ -42,7 +50,7 @@ func (s *QuayMCPServer) createToolHandler() func(context.Context, mcp.CallToolRe
 		identifier := strings.TrimPrefix(toolName, "quay_")
 
 		// Find the endpoint by operation ID or path
-		var endpoint *EndpointInfo
+		var endpoint *types.EndpointInfo
 
 		endpoints := s.quayClient.GetEndpoints()
 		arguments := request.GetArguments()
@@ -85,7 +93,7 @@ func (s *QuayMCPServer) createToolHandler() func(context.Context, mcp.CallToolRe
 			if customURIStr, ok := customURI.(string); ok && customURIStr != "" {
 				// For custom resource URIs, we might need to use the old method
 				// if it's a complete custom URI that doesn't follow our parameter pattern
-				if HasPathParameters(endpoint.Path) {
+				if s.quayClient.HasPathParameters(endpoint.Path) {
 					// Still use the new method but log the custom URI usage
 					log.Printf("Custom resource_uri provided but endpoint has path parameters, using new method")
 				}
@@ -113,7 +121,7 @@ func (s *QuayMCPServer) Start() error {
 	s.quayClient.DiscoverEndpoints()
 
 	// Generate and add tools
-	tools := s.quayClient.generateTools()
+	tools := s.quayClient.GenerateTools()
 
 	// Create a shared tool handler
 	toolHandler := s.createToolHandler()

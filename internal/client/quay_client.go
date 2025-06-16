@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"fmt"
@@ -12,17 +12,9 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/pb33f/libopenapi"
 	v2high "github.com/pb33f/libopenapi/datamodel/high/v2"
-)
 
-// EndpointInfo stores information about a discovered API endpoint
-type EndpointInfo struct {
-	Method      string
-	Path        string
-	Summary     string
-	OperationID string
-	Tags        []string
-	Parameters  []interface{}
-}
+	"github.com/quay/quay-mcp-server/internal/types"
+)
 
 // QuayClient handles all interactions with the Quay registry API
 type QuayClient struct {
@@ -30,7 +22,7 @@ type QuayClient struct {
 	oauthToken  string
 	document    libopenapi.Document
 	model       *libopenapi.DocumentModel[v2high.Swagger]
-	endpoints   map[string]*EndpointInfo // URI -> EndpointInfo mapping
+	endpoints   map[string]*types.EndpointInfo // URI -> EndpointInfo mapping
 }
 
 // NewQuayClient creates a new Quay client for the given registry URL and optional OAuth token
@@ -38,7 +30,7 @@ func NewQuayClient(registryURL, oauthToken string) *QuayClient {
 	return &QuayClient{
 		registryURL: strings.TrimRight(registryURL, "/"),
 		oauthToken:  oauthToken,
-		endpoints:   make(map[string]*EndpointInfo),
+		endpoints:   make(map[string]*types.EndpointInfo),
 	}
 }
 
@@ -165,7 +157,7 @@ func (c *QuayClient) GetModel() *libopenapi.DocumentModel[v2high.Swagger] {
 }
 
 // GetEndpoints returns the discovered endpoints
-func (c *QuayClient) GetEndpoints() map[string]*EndpointInfo {
+func (c *QuayClient) GetEndpoints() map[string]*types.EndpointInfo {
 	return c.endpoints
 }
 
@@ -182,7 +174,6 @@ func (c *QuayClient) DiscoverEndpoints() {
 		"repository":   true,
 		"robot":        true,
 		"tag":          true,
-		"team": 				true,
 	}
 
 	log.Printf("Filtering endpoints to include only tags: %v", []string{"manifest", "organization", "repository", "robot", "tag"})
@@ -233,7 +224,7 @@ func (c *QuayClient) DiscoverEndpoints() {
 		}
 
 		// Store endpoint info for later API calls
-		c.endpoints[uri] = &EndpointInfo{
+		c.endpoints[uri] = &types.EndpointInfo{
 			Method:      "GET",
 			Path:        path,
 			Summary:     operation.Summary,
@@ -247,12 +238,12 @@ func (c *QuayClient) DiscoverEndpoints() {
 }
 
 // HasPathParameters checks if a path contains parameters (e.g., {id})
-func HasPathParameters(path string) bool {
+func (c *QuayClient) HasPathParameters(path string) bool {
 	return strings.Contains(path, "{") && strings.Contains(path, "}")
 }
 
 // BuildAPIURL constructs the full API URL for a given endpoint and resource URI
-func (c *QuayClient) BuildAPIURL(endpoint *EndpointInfo, resourceURI string) (string, error) {
+func (c *QuayClient) BuildAPIURL(endpoint *types.EndpointInfo, resourceURI string) (string, error) {
 	// Start with the registry URL
 	baseURL := c.registryURL
 
@@ -275,7 +266,7 @@ func (c *QuayClient) BuildAPIURL(endpoint *EndpointInfo, resourceURI string) (st
 }
 
 // BuildAPIURLWithParams constructs the full API URL for a given endpoint with explicit parameters
-func (c *QuayClient) BuildAPIURLWithParams(endpoint *EndpointInfo, params map[string]interface{}) (string, error) {
+func (c *QuayClient) BuildAPIURLWithParams(endpoint *types.EndpointInfo, params map[string]interface{}) (string, error) {
 	// Start with the registry URL
 	baseURL := c.registryURL
 
@@ -312,7 +303,7 @@ func (c *QuayClient) BuildAPIURLWithParams(endpoint *EndpointInfo, params map[st
 	}
 
 	// Replace path parameters with actual values
-	if HasPathParameters(finalPath) {
+	if c.HasPathParameters(finalPath) {
 		for _, paramName := range pathParamNames {
 			if paramValue, exists := pathParams[paramName]; exists {
 				if paramValueStr, ok := paramValue.(string); ok {
@@ -387,7 +378,7 @@ func (c *QuayClient) extractPathParameters(resourceURI, pathTemplate string) map
 }
 
 // MakeAPICall makes an HTTP request to the Quay API and returns the response
-func (c *QuayClient) MakeAPICall(endpoint *EndpointInfo, resourceURI string) ([]byte, error) {
+func (c *QuayClient) MakeAPICall(endpoint *types.EndpointInfo, resourceURI string) ([]byte, error) {
 	apiURL, err := c.BuildAPIURL(endpoint, resourceURI)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build API URL: %v", err)
@@ -474,7 +465,7 @@ func (c *QuayClient) MakeAPICall(endpoint *EndpointInfo, resourceURI string) ([]
 }
 
 // MakeAPICallWithParams makes an HTTP request to the Quay API with explicit parameters and returns the response
-func (c *QuayClient) MakeAPICallWithParams(endpoint *EndpointInfo, params map[string]interface{}) ([]byte, error) {
+func (c *QuayClient) MakeAPICallWithParams(endpoint *types.EndpointInfo, params map[string]interface{}) ([]byte, error) {
 	apiURL, err := c.BuildAPIURLWithParams(endpoint, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build API URL: %v", err)
@@ -560,8 +551,8 @@ func (c *QuayClient) MakeAPICallWithParams(endpoint *EndpointInfo, params map[st
 	return body, nil
 }
 
-// generateTools creates MCP tools from Quay API endpoints
-func (c *QuayClient) generateTools() []mcp.Tool {
+// GenerateTools creates MCP tools from Quay API endpoints
+func (c *QuayClient) GenerateTools() []mcp.Tool {
 	model := c.GetModel()
 	if model == nil {
 		return nil
@@ -640,7 +631,7 @@ func (c *QuayClient) generateTools() []mcp.Tool {
 		}
 
 		// Add path parameters to input schema
-		if HasPathParameters(path) {
+		if c.HasPathParameters(path) {
 			// Extract parameter names from path
 			pathParams := extractPathParameterNames(path)
 			for _, paramName := range pathParams {

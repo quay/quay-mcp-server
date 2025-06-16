@@ -1,4 +1,4 @@
-module github.com/redhat/quay-mcp-golang
+module github.com/quay/quay-mcp-server
 
 go 1.23.0
 
