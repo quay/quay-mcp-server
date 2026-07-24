@@ -37,6 +37,6 @@ go.work
 ehthumbs.db
 Thumbs.db
 
-# Project specific
-quay-mcp
-quay-mcp-golang 
+# Project specific (built binaries at repo root only, not the cmd/quay-mcp source dir)
+/quay-mcp
+/quay-mcp-golang 
