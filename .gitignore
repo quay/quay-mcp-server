@@ -36,7 +36,3 @@ go.work
 .Trashes
 ehthumbs.db
 Thumbs.db
-
-# Project specific
-quay-mcp
-quay-mcp-golang 
